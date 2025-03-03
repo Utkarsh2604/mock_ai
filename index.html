@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Interview App</title>
+    <style>
+        .evaluation-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .evaluation-table th, .evaluation-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        .evaluation-table th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Interview Preparation</h1>
+    <form id="topicForm">
+        <label for="topic">Topic:</label>
+        <input type="text" id="topic" name="topic" required>
+        <br>
+        <label for="difficulty">Difficulty:</label>
+        <select id="difficulty" name="difficulty">
+            <option value="easy">Easy</option>
+            <option value="medium">Medium</option>
+            <option value="hard">Hard</option>
+        </select>
+        <br>
+        <button type="submit">Start Interview</button>
+    </form>
+
+    <div id="questionArea" style="display:none;">
+        <h2 id="question"></h2>
+        <audio id="audio" controls>
+            <source id="audioSource" src="" type="audio/mpeg">
+            Your browser does not support the audio element.
+        </audio>
+        <br>
+        <label for="answer">Your Answer:</label>
+        <!-- Voice Input Elements -->
+        <button id="startRecognition">Start Recognition</button>
+        <button id="stopRecognition" disabled>Stop Recognition</button>
+        <p id="recognitionStatus">Click Start Recognition</p>
+        <textarea id="answer" name="answer" rows="4" cols="50" readonly></textarea> <!-- Textarea for voice input -->
+        <!-- End Voice Input Elements -->
+        <button id="submitAnswer">Submit Answer</button>
+        <div id="evaluation"></div> <!-- Changed to div for HTML content -->
+    </div>
+
+    <div id="evaluationsArea" style="display:none;">
+        <h2>Evaluations</h2>
+        <ul id="evaluationsList"></ul>
+    </div>
+
+    <script>
+        let recognition; // Define recognition outside
+
+        document.getElementById('topicForm').onsubmit = async function(event) {
+            event.preventDefault();
+            const topic = document.getElementById('topic').value;
+            const difficulty = document.getElementById('difficulty').value;
+
+            const response = await fetch('/start_interview', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ topic, difficulty })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('question').innerText = data.question;
+                document.getElementById('audioSource').src = data.audio_file;
+                document.getElementById('audio').load();
+                document.getElementById('questionArea').style.display = 'block';
+                document.getElementById('evaluationsArea').style.display = 'none';
+
+                // Initialize Speech Recognition after starting interview
+                initializeSpeechRecognition();
+
+            } else {
+                alert('Failed to start interview: ' + response.statusText);
+            }
+        };
+
+        document.getElementById('submitAnswer').onclick = async function() {
+            const answer = document.getElementById('answer').value;
+
+            const response = await fetch('/answer', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ answer })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+
+                if (data.evaluation) {
+                    if (typeof data.evaluation === 'string') {
+                        // Handle plain text error message
+                        document.getElementById('evaluation').innerText = data.evaluation;
+                    } else if (data.evaluation.error) {
+                        // Handle error in JSON
+                        document.getElementById('evaluation').innerText = data.evaluation.error + (data.evaluation.raw_text ? ' Raw response: ' + data.evaluation.raw_text : '');
+                    } else {
+                        // Display evaluation as a table
+                        displayEvaluation(data.evaluation);
+                    }
+                } else {
+                    document.getElementById('evaluation').innerText = 'No evaluation received.';
+                }
+
+                if (data.message === "Interview completed.") {
+                    await displayEvaluations();
+                    document.getElementById('questionArea').style.display = 'none';
+                } else {
+                    document.getElementById('question').innerText = data.next_question;
+                    document.getElementById('audioSource').src = data.audio_file;
+                    document.getElementById('audio').load();
+                    document.getElementById('answer').value = ''; // Clear answer field
+
+                    // Reset speech recognition
+                    resetSpeechRecognition();
+                }
+            } else {
+                alert('Failed to submit answer: ' + response.statusText);
+            }
+        };
+
+        async function displayEvaluations() {
+            const response = await fetch('/evaluations');
+            if (response.ok) {
+                const data = await response.json();
+                const evaluations = data.evaluations;
+                const evaluationsList = document.getElementById('evaluationsList');
+                evaluationsList.innerHTML = '';
+
+                if (evaluations && evaluations.length > 0) {
+                    evaluations.forEach(eval => {
+                        const listItem = document.createElement('li');
+                        let evaluationContent = '';
+                        if (typeof eval.evaluation === 'string') {
+                            evaluationContent = eval.evaluation;
+                        } else if (eval.evaluation.error) {
+                            evaluationContent = eval.evaluation.error;
+                        }
+                         else {
+                            evaluationContent = createEvaluationTable(eval.evaluation);
+                        }
+                        listItem.innerHTML = `<strong>Question:</strong> ${eval.question}<br>
+                                             <strong>Answer:</strong> ${eval.answer}<br>
+                                             <strong>Evaluation:</strong> ${evaluationContent}<br><br>`;
+                        evaluationsList.appendChild(listItem);
+                    });
+                    document.getElementById('evaluationsArea').style.display = 'block';
+                } else {
+                    evaluationsList.innerHTML = '<li>No evaluations available.</li>';
+                }
+            } else {
+                alert('Failed to fetch evaluations: ' + response.statusText);
+            }
+        }
+
+        function displayEvaluation(evaluation) {
+            const evaluationDiv = document.getElementById('evaluation');
+            evaluationDiv.innerHTML = createEvaluationTable(evaluation);
+        }
+
+        function createEvaluationTable(evaluation) {
+            let tableHTML = '<table class="evaluation-table">';
+            tableHTML += '<thead><tr><th>Metric</th><th>Score</th></tr></thead>';
+            tableHTML += '<tbody>';
+            tableHTML += `<tr><td>Correctness</td><td>${evaluation.correctness}</td></tr>`;
+            tableHTML += `<tr><td>Depth</td><td>${evaluation.depth}</td></tr>`;
+            tableHTML += `<tr><td>Relevance</td><td>${evaluation.relevance}</td></tr>`;
+            tableHTML += `<tr><td>Clarity</td><td>${evaluation.clarity}</td></tr>`;
+            tableHTML += `<tr><td>Completeness</td><td>${evaluation.completeness}</td></tr>`;
+            tableHTML += `<tr><td>Overall Score</td><td>${evaluation.overall_score}</td></tr>`;
+            tableHTML += '</tbody></table>';
+            tableHTML += '<strong>Strengths:</strong> ' + evaluation.strengths + '<br>';
+            tableHTML += '<strong>Weaknesses:</strong> ' + evaluation.weaknesses;
+            return tableHTML;
+        }
+
+        function initializeSpeechRecognition() {
+            const startRecognitionButton = document.getElementById('startRecognition');
+            const stopRecognitionButton = document.getElementById('stopRecognition');
+            const recognitionStatusParagraph = document.getElementById('recognitionStatus');
+            const answerTextarea = document.getElementById('answer');
+
+            if ('webkitSpeechRecognition' in window) {
+                recognition = new webkitSpeechRecognition(); // For Chrome
+
+                recognition.continuous = false;
+                recognition.interimResults = false;
+                recognition.lang = 'en-US';  // Or other language
+
+                recognition.onstart = function() {
+                    console.log("Speech recognition started.");
+                    recognitionStatusParagraph.textContent = "Listening...";
+                    startRecognitionButton.disabled = true;
+                    stopRecognitionButton.disabled = false;
+                    answerTextarea.value = ''; // Clear previous text
+                };
+
+                recognition.onresult = function(event) {
+                    const transcript = event.results[0][0].transcript;
+                    answerTextarea.value = transcript;
+                    console.log("Transcript:", transcript);
+                    stopRecognition(); // Stop automatically after getting the final result
+                };
+
+                recognition.onerror = function(event) {
+                    console.error("Speech recognition error:", event.error);
+                    recognitionStatusParagraph.textContent = "Error: " + event.error;
+                    startRecognitionButton.disabled = false;
+                    stopRecognitionButton.disabled = true;
+                };
+
+                recognition.onend = function() {
+                    console.log("Speech recognition ended.");
+                    recognitionStatusParagraph.textContent = "Click Start Recognition";
+                    startRecognitionButton.disabled = false;
+                    stopRecognitionButton.disabled = true;
+                };
+
+                startRecognitionButton.addEventListener('click', function() {
+                    recognition.start();
+                });
+
+                stopRecognitionButton.addEventListener('click', function() {
+                    stopRecognition();
+                });
+            } else {
+                recognitionStatusParagraph.textContent = "Web Speech API is not supported in this browser.";
+                startRecognitionButton.disabled = true;
+                stopRecognitionButton.disabled = true;
+            }
+        }
+
+        function stopRecognition() {
+            if (recognition) {
+                recognition.stop();
+            }
+        }
+
+        function resetSpeechRecognition() {
+            const startRecognitionButton = document.getElementById('startRecognition');
+            const stopRecognitionButton = document.getElementById('stopRecognition');
+            const recognitionStatusParagraph = document.getElementById('recognitionStatus');
+            const answerTextarea = document.getElementById('answer');
+
+            if (recognition) {
+                recognition.stop(); // Stop if running
+            }
+            startRecognitionButton.disabled = false;
+            stopRecognitionButton.disabled = true;
+            recognitionStatusParagraph.textContent = "Click Start Recognition";
+            answerTextarea.value = '';
+        }
+
+    </script>
+</body>
+</html>
